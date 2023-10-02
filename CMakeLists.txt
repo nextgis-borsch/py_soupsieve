@@ -23,7 +23,7 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 ################################################################################
-cmake_minimum_required(VERSION 2.8.12 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
 
 project(soupsieve)
 
@@ -46,51 +46,12 @@ else()
     set(INSTALL_LIB_DIR "." CACHE INTERNAL "Installation directory for libraries" FORCE)
 endif()
 
-if(NOT WITH_PYTHON2 AND NOT WITH_PYTHON3)
-    set(WITH_PYTHON3 ON)
+find_package(Python3 COMPONENTS Interpreter)
+if(NOT Python3_FOUND)
+	message(FATAL_ERROR "Cannot find python 3")
 endif()
 
-if(WITH_PYTHON2)
-    set(LATEST_AVAILABLE_VERSION 1.9.5)
-    find_package(PythonInterp 2)
-    if(PYTHONINTERP_FOUND)
-        set(PYTHON2_EXECUTABLE ${PYTHON_EXECUTABLE})
-        set(PYTHON2_VERSION_MAJOR ${PYTHON_VERSION_MAJOR})
-        set(PYTHON2_VERSION_MINOR ${PYTHON_VERSION_MINOR})
-    else()
-        message(WARNING "Cannot find python 2")
-    endif()
-endif()
-
-unset(PYTHONINTERP_FOUND)
-unset(PYTHON_EXECUTABLE)
-unset(PYTHON_VERSION_MAJOR)
-unset(PYTHON_VERSION_MINOR)
-
-if(WITH_PYTHON3)
-    # Hack, not find python3 withouut this
-    find_program(PYTHON3_EXECUTABLE python3)
-    set(PYTHON_EXECUTABLE ${PYTHON3_EXECUTABLE})
-
-    find_package(PythonInterp 3)
-    if(PYTHONINTERP_FOUND)
-        set(PYTHON3_EXECUTABLE ${PYTHON_EXECUTABLE})
-        set(PYTHON3_VERSION_MAJOR ${PYTHON_VERSION_MAJOR})
-        set(PYTHON3_VERSION_MINOR ${PYTHON_VERSION_MINOR})
-    else()
-        message(WARNING "Cannot find python 3")
-    endif()
-endif()
-
-if(NOT PYTHON2_EXECUTABLE AND NOT PYTHON3_EXECUTABLE)
-    message(FATAL_ERROR "Cannot find python")
-endif()
-
-if(PYTHON2_EXECUTABLE)
-    set(PYTHON_EXECUTABLE ${PYTHON2_EXECUTABLE})
-else()
-    set(PYTHON_EXECUTABLE ${PYTHON3_EXECUTABLE})
-endif()
+set(PYTHON_EXECUTABLE ${Python3_EXECUTABLE})
 
 file(DOWNLOAD "https://pypi.python.org/pypi/${PROJECT_NAME}/json" "${CMAKE_CURRENT_BINARY_DIR}/meta.json")
 
@@ -98,7 +59,7 @@ include(util)
 get_compiler_version(COMPILER)
 # get version and download url
 execute_process(COMMAND ${PYTHON_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/cmake/pypi_process.py ${PLUGIN} ${CMAKE_CURRENT_BINARY_DIR}/meta.json ${COMPILER} ${LATEST_AVAILABLE_VERSION}
+    ${CMAKE_SOURCE_DIR}/cmake/pypi_process.py ${PLUGIN} ${CMAKE_CURRENT_BINARY_DIR}/meta.json ${COMPILER}
     OUTPUT_VARIABLE PACKAGE_DETAILS
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
@@ -108,37 +69,6 @@ list(GET PACKAGE_DETAILS 1 VERSION)
 list(GET PACKAGE_DETAILS 2 PROJECT_CPACK_FILENAME)
 
 report_version(${PROJECT_NAME} ${VERSION})
-
-if(OSX_FRAMEWORK)
-    set(FLAGS "ARCHFLAGS=-arch x86_64")
-elseif(WIN32)
-    if(MSVC_VERSION EQUAL 1400)
-        set(FLAGS ${FLAGS} "VS90COMNTOOLS=$ENV{VS80COMNTOOLS}")
-    elseif(MSVC_VERSION EQUAL 1500)
-        set(FLAGS ${FLAGS} "VS90COMNTOOLS=$ENV{VS90COMNTOOLS}")
-    elseif(MSVC_VERSION EQUAL 1600)
-        set(FLAGS ${FLAGS} "VS90COMNTOOLS=$ENV{VS100COMNTOOLS}")
-    elseif(MSVC_VERSION EQUAL 1700)
-        set(FLAGS ${FLAGS} "VS90COMNTOOLS=$ENV{VS110COMNTOOLS}")
-    elseif(MSVC_VERSION EQUAL 1800)
-        set(FLAGS ${FLAGS} "VS90COMNTOOLS=$ENV{VS120COMNTOOLS}")
-    elseif(MSVC_VERSION EQUAL 1900)
-        set(FLAGS ${FLAGS} "VS90COMNTOOLS=$ENV{VS140COMNTOOLS}")
-    else() # 1912 - Need to copy vcvarsall.bat from VC\Auxiliary\Build to VC
-        get_filename_component(_COMNTOOLS_PREFIX "${CMAKE_C_COMPILER}" PATH)
-        get_filename_component(_COMNTOOLS_PREFIX "${_COMNTOOLS_PREFIX}" PATH)
-        get_filename_component(_COMNTOOLS_PREFIX "${_COMNTOOLS_PREFIX}" PATH)
-        get_filename_component(_COMNTOOLS_PREFIX "${_COMNTOOLS_PREFIX}" PATH)
-        get_filename_component(_COMNTOOLS_PREFIX "${_COMNTOOLS_PREFIX}" PATH)
-        get_filename_component(_COMNTOOLS_PREFIX "${_COMNTOOLS_PREFIX}" PATH)
-        # get_filename_component(_COMNTOOLS_PREFIX "${_COMNTOOLS_PREFIX}" PATH)
-        set(FLAGS ${FLAGS} "VS90COMNTOOLS=${_COMNTOOLS_PREFIX}")
-    endif()
-else()
-    set(FLAGS "NextGIS=TRUE")
-endif()
-
-set(BUILD_INCLUDES ${BUILD_INCLUDES} -q)
 
 # Download tarbal
 set(OUT_DIR_NAME ${PROJECT_NAME}-${VERSION})
@@ -157,80 +87,8 @@ if(NOT EXISTS ${CMAKE_CURRENT_BINARY_DIR}/${OUT_DIR_NAME})
     execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${CMAKE_CURRENT_BINARY_DIR}/${OUT_NAME})
 endif()
 
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/${OUT_DIR_NAME}/requirements/project.txt "") # Skip requirements as they will set in package dependencies
-
-macro(build_py ver)
-    status_message("Configuring ...")
-    execute_process(COMMAND ${CMAKE_COMMAND} -E env "${FLAGS}"
-        ${PYTHON${ver}_EXECUTABLE} setup.py build ${BUILD_INCLUDES}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${OUT_DIR_NAME}
-        OUTPUT_QUIET ERROR_QUIET
-    )
-
-    add_custom_target(build_py${ver} ALL
-        COMMAND ${CMAKE_COMMAND} -E env "${FLAGS}"
-        ${PYTHON${ver}_EXECUTABLE} setup.py build_ext ${BUILD_INCLUDES}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${OUT_DIR_NAME}
-        VERBATIM
-    )
-
-    if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-        set(SETUP_OPTS ${SETUP_OPTS} --no-compile --single-version-externally-managed --record=rekord.txt --prefix=${CMAKE_CURRENT_BINARY_DIR}/inst_tmp)
-    elseif(WIN32)
-        string(REPLACE "/" "\\\\" TMP_PATH "${CMAKE_CURRENT_BINARY_DIR}/inst_tmp")
-        set(SETUP_OPTS ${SETUP_OPTS} --no-compile --single-version-externally-managed --record=rekord.txt --prefix=${TMP_PATH})
-    else()
-        execute_process ( COMMAND ${PYTHON${ver}_EXECUTABLE} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())" OUTPUT_VARIABLE PY_SITE_PACKAGES OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-        set(TEST_CMD "try:
-    import setuptools
-    print(1)
-except ImportError:
-    pass")
-
-        execute_process ( COMMAND ${PYTHON${ver}_EXECUTABLE} -c ${TEST_CMD} OUTPUT_VARIABLE PY_HAVE_SETUPTOOLS OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if(PY_HAVE_SETUPTOOLS)
-            set(SETUP_OPTS "${SETUP_OPTS} --no-compile --single-version-externally-managed --record=rekord.txt")
-        endif()
-
-        string( LENGTH "$ENV{DESTDIR}" DESTDIRLEN )
-        if ( ${DESTDIRLEN} GREATER 0 )
-            set(SETUP_OPTS "${SETUP_OPTS} --root=$ENV{DESTDIR}")
-        elseif(PYTHON_DESTDIR)
-            set(SETUP_OPTS "${SETUP_OPTS} --root=${PYTHON_DESTDIR}")
-        endif()
-
-        # check debian
-        string(FIND ${PY_SITE_PACKAGES} "dist-packages" PY_DIST_POS)
-        if(${PY_DIST_POS} GREATER -1)
-            set(SETUP_OPTS "${SETUP_OPTS} --install-layout=deb")
-        endif()
-
-        # TODO: do we need --install-lib=$(PYTHON_INSTALL_LIB) ?
-
-        set(SETUP_OPTS "${SETUP_OPTS} --prefix=${CMAKE_CURRENT_BINARY_DIR}/inst_tmp")
-
-    endif()
-    add_custom_target(install_py${ver} ALL
-        COMMAND ${CMAKE_COMMAND} -E env "${FLAGS}"
-        ${PYTHON${ver}_EXECUTABLE} setup.py install ${SETUP_OPTS}
-        DEPENDS build_py${ver}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${OUT_DIR_NAME}
-        VERBATIM
-    )
-endmacro()
-
-
-if(PYTHON2_EXECUTABLE)
-    build_py(2)
-endif()
-
-if(PYTHON3_EXECUTABLE)
-    build_py(3)
-endif()
-
 if(NOT SKIP_INSTALL_LIBRARIES AND NOT SKIP_INSTALL_ALL )
-    install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/inst_tmp/ DESTINATION ${INSTALL_LIB_DIR} USE_SOURCE_PERMISSIONS)
+    install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${OUT_DIR_NAME}/${PROJECT_NAME}/ DESTINATION ${INSTALL_LIB_DIR}/${PROJECT_NAME}/)
 endif()
 
 # Archiving ====================================================================
